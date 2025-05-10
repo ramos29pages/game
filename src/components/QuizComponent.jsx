@@ -1,20 +1,7 @@
-// src/QuizComponent.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
+import { saveScore, getBestScore } from '../services/scoreService';
 
-// — Hook para sincronizar con localStorage —  
-function useLocalStorage(key, initial) {
-  const [state, setState] = useState(() => {
-    const v = localStorage.getItem(key);
-    return v ? JSON.parse(v) : initial;
-  });                                                               
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(state));               // persiste en localStorage :contentReference[oaicite:0]{index=0}
-  }, [key, state]);
-  return [state, setState];
-}
-
-// — Función de parseo robusto de MCQ —  
 function parseMCQ(text) {
   if (!text) return null;
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -33,52 +20,33 @@ function parseMCQ(text) {
 }
 
 export default function QuizComponent() {
-  // — Estados del quiz —  
-  const [name, setName] = useState('');                             // useState para estado :contentReference[oaicite:1]{index=1}
-  const [stage, setStage] = useState('enterName');                  // etapas: enterName, quiz, results
+  const [name, setName] = useState('');
+  const [stage, setStage] = useState('enterName');
   const [questions, setQuestions] = useState([]);
   const [idx, setIdx] = useState(0);
   const [userAnswer, setUserAnswer] = useState('');
   const [score, setScore] = useState(0);
   const [startTime, setStartTime] = useState(null);
   const [endTime, setEndTime] = useState(null);
-
-  // — AI & loading —  
   const [ai, setAi] = useState(null);
   const [loadingQ, setLoadingQ] = useState(false);
   const [loadingA, setLoadingA] = useState(false);
   const feedbackRef = useRef(null);
+  const best = getBestScore();
 
-  // — Registros en localStorage —  
-  const [records, setRecords] = useLocalStorage('quizRecords', []);
-  // seleccionar mejor con reduce: score desc, time asc :contentReference[oaicite:2]{index=2}
-  const best = records.reduce((b, r) => {
-    if (!b) return r;
-    if (r.score > b.score) return r;
-    if (r.score === b.score && r.time < b.time) return r;
-    return b;
-  }, null);
-
-  // inicializar Gemini AI
   useEffect(() => {
     const key = import.meta.env.VITE_GEMINI_API_KEY;
     if (key) setAi(new GoogleGenAI({ apiKey: key }));
   }, []);
 
-  // — obtener pregunta —  
   const fetchQuestion = async () => {
     if (!ai) return;
     setLoadingQ(true);
-    const prompt = `
-      Genera una pregunta sobre reciclaje y los Objetivos de Desarrollo Sostenible (ODS),
+    const prompt = `Genera una pregunta sobre reciclaje y los Objetivos de Desarrollo Sostenible (ODS),
       con 4 opciones (A, B, C, D) y la letra correcta al final.
-      Formato: 'Pregunta? A) ... B) ... C) ... D) ... Respuesta: X'
-    `;
+      Formato: 'Pregunta? A) ... B) ... C) ... D) ... Respuesta: X`;
     try {
-      const res = await ai.models.generateContent({
-        model: 'gemini-2.0-flash-001',
-        contents: prompt
-      });
+      const res = await ai.models.generateContent({ model: 'gemini-2.0-flash-001', contents: prompt });
       const parsed = parseMCQ(res.text || '');
       if (parsed) setQuestions(qs => [...qs, parsed]);
       else throw new Error('Formato inesperado');
@@ -90,36 +58,41 @@ export default function QuizComponent() {
     }
   };
 
-  // — enviar respuesta —  
   const submitAnswer = async letter => {
     if (!ai) return;
     setLoadingA(true);
     setUserAnswer(letter);
     const curr = questions[idx];
-    const prompt = `
-      ¿La respuesta "${letter}" es correcta para: "${curr.question}" con opciones
-      ${Object.entries(curr.options).map(([L,T])=>`${L}) ${T}`).join(' ')}?
-      Respuesta correcta: ${curr.answer}. Responde "Correcto" o "Incorrecto".
-    `;
+    const opts = Object.entries(curr.options).map(([L, T]) => `${L}) ${T}`).join(' ');
+    const prompt = `¿La respuesta "${letter}" es correcta para: "${curr.question}" con opciones ${opts}? Respuesta correcta: ${curr.answer}. Responde "Correcto" o "Incorrecto".`;
     try {
       const res = await ai.models.generateContent({ model: 'gemini-2.0-flash-001', contents: prompt });
       const correct = res.text.trim().toLowerCase().startsWith('correcto');
       const fb = feedbackRef.current;
-      if (correct) {
-        setScore(s => s + 1);
-        fb.textContent = '¡Correcto!';
-        fb.className = 'text-green-600';
-      } else {
-        fb.textContent = `Incorrecto. Era ${curr.answer}.`;
-        fb.className = 'text-red-600';
-      }
+      fb.innerHTML = correct
+        ? `<div class="flex items-center justify-center space-x-2">
+            <svg class="w-6 h-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <span>¡Correcto!</span>
+          </div>`
+        : `<div class="flex items-center justify-center space-x-2">
+            <svg class="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            <span>Incorrecto. Era ${curr.answer}.</span>
+          </div>`;
+      if (correct) setScore(s => s + 1);
     } catch {
-      const fb = feedbackRef.current;
-      fb.textContent = 'Error verificando.';
-      fb.className = 'text-yellow-600';
+      feedbackRef.current.innerHTML = `<div class="flex items-center justify-center space-x-2">
+        <svg class="w-6 h-6 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.5-1.667 1.732-3L13.732 4c-.837-1.566-3.032-1.566-3.869 0L2.268 16c-.772 1.566.192 3 1.732 3z" />
+        </svg>
+        <span>Error verificando</span>
+      </div>`;
     } finally {
       setTimeout(() => {
-        feedbackRef.current.textContent = '';
+        feedbackRef.current.innerHTML = '';
         setUserAnswer('');
         if (idx < questions.length - 1) {
           setIdx(i => i + 1);
@@ -127,35 +100,16 @@ export default function QuizComponent() {
         } else {
           setEndTime(Date.now());
           setStage('results');
-          // — actualizar registros automáticamente —  
-          const time = Math.floor((Date.now() - startTime) / 1000);
-          setRecords(prev => {
-            const exists = prev.find(r => r.name === name);
-            let updated = [...prev];
-            if (exists) {
-              // reemplazar si mejoró según score o empate+tiempo mejor :contentReference[oaicite:3]{index=3}
-              updated = prev.map(r => {
-                if (r.name !== name) return r;
-                if (score > r.score || (score === r.score && time < r.time)) {
-                  return { name, score, time, date: new Date().toISOString() };
-                }
-                return r;
-              });
-            } else if (score > 0) {
-              // solo agregar si obtuvo al menos 1 punto
-              updated.push({ name, score, time, date: new Date().toISOString() });
-            }
-            return updated;
-          });
+          const time = Date.now() - startTime;
+          saveScore(name, score, time);
         }
+        setLoadingA(false);
       }, 1500);
-      setLoadingA(false);
     }
   };
 
-  const timeTaken = startTime && endTime ? Math.floor((endTime - startTime)/1000) : 0;
+  const timeTaken = startTime && endTime ? (endTime - startTime) : 0;
 
-  // — UI Handlers —  
   const handleStart = e => {
     e.preventDefault();
     if (!name.trim()) return alert('Ingresa tu nombre.');
@@ -163,6 +117,7 @@ export default function QuizComponent() {
     setStartTime(Date.now());
     fetchQuestion();
   };
+
   const handleRestart = () => {
     setQuestions([]);
     setIdx(0);
@@ -173,19 +128,28 @@ export default function QuizComponent() {
     setName('');
   };
 
-  // — Render —  
   if (stage === 'enterName') {
     return (
       <div className="p-6 max-w-md mx-auto">
         {best && (
-          <div className="mb-4 p-3 bg-blue-100 rounded">
-            Mejor: <strong>{best.name}</strong> — Score: {best.score}, Tiempo: {best.time}s
+          <div className="mb-6 p-4 bg-orange-100 rounded-lg border border-orange-300 shadow-sm">
+            <p className="font-semibold text-orange-700">Mejor Puntuación:</p>
+            <p><strong>{best.name}</strong> — Score: {best.score}, Tiempo: {best.time}ms</p>
           </div>
         )}
-        <form onSubmit={handleStart} className="space-y-2">
-          <input className="border p-2 w-full" placeholder="Tu nombre" value={name}
-                 onChange={e=>setName(e.target.value)} />
-          <button className="bg-blue-500 text-white py-2 w-full">Empezar</button>
+        <form onSubmit={handleStart} className="space-y-4">
+          <input
+            className="w-full px-4 py-3 border border-orange-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+            placeholder="Tu nombre"
+            value={name}
+            onChange={e => setName(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="w-full py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-semibold rounded-lg shadow-md transition duration-200 ease-in-out transform hover:scale-105 active:scale-95"
+          >
+            Empezar
+          </button>
         </form>
       </div>
     );
@@ -193,40 +157,89 @@ export default function QuizComponent() {
 
   if (stage === 'results') {
     return (
-      <div className="p-6 max-w-md mx-auto text-center">
-        <h2 className="text-2xl mb-2">Resultados</h2>
-        <p>{name}, Score: {score}/{questions.length}</p>
-        <p>Tiempo: {timeTaken}s</p>
-        <button onClick={handleRestart}
-                className="mt-4 bg-green-500 text-white py-2 px-4 rounded">
-          Volver a jugar
-        </button>
+      <div className="p-6 max-w-md mx-auto bg-white rounded-lg shadow-lg text-center">
+        <h2 className="text-3xl font-bold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-orange-700">¡Resultados!</h2>
+        <div className="space-y-4">
+          <p className="text-xl text-gray-800">
+            <span className="font-semibold">{name}</span>, tu puntuación es:
+          </p>
+          <div className="flex flex-col items-center space-y-2">
+            <p className="text-4xl font-bold text-orange-600">{score}/{questions.length}</p>
+            <p className="text-lg text-gray-600">Tiempo: {timeTaken}ms</p>
+          </div>
+          <button
+            onClick={handleRestart}
+            className="w-full py-3 px-6 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-semibold rounded-lg shadow-md transition duration-200 ease-in-out transform hover:scale-105 active:scale-95 animate-pulse"
+          >
+            ¡Volver a Jugar!
+          </button>
+        </div>
       </div>
     );
   }
 
   const curr = questions[idx];
   return (
-    <div className="p-6 max-w-md mx-auto">
-      <h2 className="mb-4">Pregunta {idx+1}</h2>
-      {loadingQ ? <p>Cargando pregunta…</p> : (
+    <div className="p-6 max-w-md mx-auto bg-white rounded-lg shadow-lg">
+      <h2 className="mb-6 text-2xl font-semibold text-orange-600">Pregunta {idx + 1}</h2>
+      {loadingQ ? (
+        <div className="flex justify-center items-center h-32">
+          <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-orange-500"></div>
+          <p className="ml-3 text-orange-600">Generando pregunta...</p>
+        </div>
+      ) : (
         <>
-          <p className="mb-3">{curr.question}</p>
-          <div className="space-y-2 mb-2">
-            {Object.entries(curr.options).map(([L,T])=>(
-              <button key={L}
-                      onClick={()=>submitAnswer(L)}
-                      disabled={!!userAnswer}
-                      className="block w-full text-left border p-2 rounded">
-                {L}) {T}
+          <p className="mb-6 text-lg text-gray-800">{curr.question}</p>
+          <div className="space-y-4 mb-6">
+            {Object.entries(curr.options).map(([L, T]) => (
+              <button
+                key={L}
+                onClick={() => submitAnswer(L)}
+                disabled={!!userAnswer}
+                className={`w-full px-5 py-4 rounded-lg transition-all duration-200 ease-in-out transform hover:scale-105 active:scale-95 ${
+                  userAnswer === L
+                    ? 'bg-orange-100 border-2 border-orange-500'
+                    : 'bg-white border border-orange-200 hover:border-orange-300'
+                }`}
+              >
+                <div className="flex justify-between items-center">
+                  <span className="text-orange-700 font-medium">{L}) {T}</span>
+                  {userAnswer === L && (
+                    <svg
+                      className={`w-5 h-5 ${userAnswer === curr.answer ? 'text-green-500' : 'text-red-500'}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      {userAnswer === curr.answer ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      ) : (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      )}
+                    </svg>
+                  )}
+                </div>
               </button>
             ))}
           </div>
-          <div ref={feedbackRef} className="mb-2"></div>
-          {loadingA && <p>Verificando…</p>}
+          <div ref={feedbackRef} className="mb-4 text-center min-h-[2rem]"></div>
+          {loadingA && (
+            <div className="flex justify-center items-center space-x-2">
+              <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-orange-500"></div>
+              <p className="text-orange-600">Verificando respuesta...</p>
+            </div>
+          )}
         </>
       )}
-      <p>Puntuación: {score}</p>
+      <div className="flex justify-between items-center mt-6">
+        <p className="text-orange-600 font-semibold">Puntuación: {score}</p>
+        <button
+          onClick={handleRestart}
+          className="px-4 py-2 bg-orange-100 text-orange-600 rounded-lg hover:bg-orange-200 transition duration-200"
+        >
+          Reiniciar
+        </button>
+      </div>
     </div>
   );
 }
